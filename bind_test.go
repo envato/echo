@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"reflect"
 	"strconv"
 	"strings"
@@ -56,11 +57,51 @@ type (
 		Tptr        *Timestamp
 		SA          StringArray
 	}
+	bindTestStructWithTags struct {
+		I           int      `json:"I" form:"I"`
+		PtrI        *int     `json:"PtrI" form:"PtrI"`
+		I8          int8     `json:"I8" form:"I8"`
+		PtrI8       *int8    `json:"PtrI8" form:"PtrI8"`
+		I16         int16    `json:"I16" form:"I16"`
+		PtrI16      *int16   `json:"PtrI16" form:"PtrI16"`
+		I32         int32    `json:"I32" form:"I32"`
+		PtrI32      *int32   `json:"PtrI32" form:"PtrI32"`
+		I64         int64    `json:"I64" form:"I64"`
+		PtrI64      *int64   `json:"PtrI64" form:"PtrI64"`
+		UI          uint     `json:"UI" form:"UI"`
+		PtrUI       *uint    `json:"PtrUI" form:"PtrUI"`
+		UI8         uint8    `json:"UI8" form:"UI8"`
+		PtrUI8      *uint8   `json:"PtrUI8" form:"PtrUI8"`
+		UI16        uint16   `json:"UI16" form:"UI16"`
+		PtrUI16     *uint16  `json:"PtrUI16" form:"PtrUI16"`
+		UI32        uint32   `json:"UI32" form:"UI32"`
+		PtrUI32     *uint32  `json:"PtrUI32" form:"PtrUI32"`
+		UI64        uint64   `json:"UI64" form:"UI64"`
+		PtrUI64     *uint64  `json:"PtrUI64" form:"PtrUI64"`
+		B           bool     `json:"B" form:"B"`
+		PtrB        *bool    `json:"PtrB" form:"PtrB"`
+		F32         float32  `json:"F32" form:"F32"`
+		PtrF32      *float32 `json:"PtrF32" form:"PtrF32"`
+		F64         float64  `json:"F64" form:"F64"`
+		PtrF64      *float64 `json:"PtrF64" form:"PtrF64"`
+		S           string   `json:"S" form:"S"`
+		PtrS        *string  `json:"PtrS" form:"PtrS"`
+		cantSet     string
+		DoesntExist string      `json:"DoesntExist" form:"DoesntExist"`
+		GoT         time.Time   `json:"GoT" form:"GoT"`
+		GoTptr      *time.Time  `json:"GoTptr" form:"GoTptr"`
+		T           Timestamp   `json:"T" form:"T"`
+		Tptr        *Timestamp  `json:"Tptr" form:"Tptr"`
+		SA          StringArray `json:"SA" form:"SA"`
+	}
 	Timestamp   time.Time
 	TA          []Timestamp
 	StringArray []string
 	Struct      struct {
 		Foo string
+	}
+	Bar struct {
+		Baz int `json:"baz" query:"baz"`
 	}
 )
 
@@ -123,9 +164,37 @@ var values = map[string][]string{
 	"ST":      {"bar"},
 }
 
+func TestToMultipleFields(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, "/?id=1&ID=2", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+
+	type Root struct {
+		ID     int64 `query:"id"`
+		Child2 struct {
+			ID int64
+		}
+		Child1 struct {
+			ID int64 `query:"id"`
+		}
+	}
+
+	u := new(Root)
+	err := c.Bind(u)
+	if assert.NoError(t, err) {
+		assert.Equal(t, int64(1), u.ID)        // perfectly reasonable
+		assert.Equal(t, int64(1), u.Child1.ID) // untagged struct containing tagged field gets filled (by tag)
+		assert.Equal(t, int64(0), u.Child2.ID) // untagged struct containing untagged field should not be bind
+	}
+}
+
 func TestBindJSON(t *testing.T) {
 	assert := assert.New(t)
-	testBindOkay(assert, strings.NewReader(userJSON), MIMEApplicationJSON)
+	testBindOkay(assert, strings.NewReader(userJSON), nil, MIMEApplicationJSON)
+	testBindOkay(assert, strings.NewReader(userJSON), dummyQuery, MIMEApplicationJSON)
+	testBindArrayOkay(assert, strings.NewReader(usersJSON), nil, MIMEApplicationJSON)
+	testBindArrayOkay(assert, strings.NewReader(usersJSON), dummyQuery, MIMEApplicationJSON)
 	testBindError(assert, strings.NewReader(invalidContent), MIMEApplicationJSON, &json.SyntaxError{})
 	testBindError(assert, strings.NewReader(userJSONInvalidType), MIMEApplicationJSON, &json.UnmarshalTypeError{})
 }
@@ -133,11 +202,15 @@ func TestBindJSON(t *testing.T) {
 func TestBindXML(t *testing.T) {
 	assert := assert.New(t)
 
-	testBindOkay(assert, strings.NewReader(userXML), MIMEApplicationXML)
+	testBindOkay(assert, strings.NewReader(userXML), nil, MIMEApplicationXML)
+	testBindOkay(assert, strings.NewReader(userXML), dummyQuery, MIMEApplicationXML)
+	testBindArrayOkay(assert, strings.NewReader(userXML), nil, MIMEApplicationXML)
+	testBindArrayOkay(assert, strings.NewReader(userXML), dummyQuery, MIMEApplicationXML)
 	testBindError(assert, strings.NewReader(invalidContent), MIMEApplicationXML, errors.New(""))
 	testBindError(assert, strings.NewReader(userXMLConvertNumberError), MIMEApplicationXML, &strconv.NumError{})
 	testBindError(assert, strings.NewReader(userXMLUnsupportedTypeError), MIMEApplicationXML, &xml.SyntaxError{})
-	testBindOkay(assert, strings.NewReader(userXML), MIMETextXML)
+	testBindOkay(assert, strings.NewReader(userXML), nil, MIMETextXML)
+	testBindOkay(assert, strings.NewReader(userXML), dummyQuery, MIMETextXML)
 	testBindError(assert, strings.NewReader(invalidContent), MIMETextXML, errors.New(""))
 	testBindError(assert, strings.NewReader(userXMLConvertNumberError), MIMETextXML, &strconv.NumError{})
 	testBindError(assert, strings.NewReader(userXMLUnsupportedTypeError), MIMETextXML, &xml.SyntaxError{})
@@ -146,8 +219,8 @@ func TestBindXML(t *testing.T) {
 func TestBindForm(t *testing.T) {
 	assert := assert.New(t)
 
-	testBindOkay(assert, strings.NewReader(userForm), MIMEApplicationForm)
-	testBindError(assert, nil, MIMEApplicationForm, nil)
+	testBindOkay(assert, strings.NewReader(userForm), nil, MIMEApplicationForm)
+	testBindOkay(assert, strings.NewReader(userForm), dummyQuery, MIMEApplicationForm)
 	e := New()
 	req := httptest.NewRequest(http.MethodPost, "/", strings.NewReader(userForm))
 	rec := httptest.NewRecorder()
@@ -196,16 +269,50 @@ func TestBindQueryParamsCaseSensitivePrioritized(t *testing.T) {
 	}
 }
 
+func TestBindHeaderParam(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Name", "Jon Doe")
+	req.Header.Set("Id", "2")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	u := new(user)
+	err := (&DefaultBinder{}).BindHeaders(c, u)
+	if assert.NoError(t, err) {
+		assert.Equal(t, 2, u.ID)
+		assert.Equal(t, "Jon Doe", u.Name)
+	}
+}
+
+func TestBindHeaderParamBadType(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Id", "salamander")
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	u := new(user)
+	err := (&DefaultBinder{}).BindHeaders(c, u)
+	assert.Error(t, err)
+
+	httpErr, ok := err.(*HTTPError)
+	if assert.True(t, ok) {
+		assert.Equal(t, http.StatusBadRequest, httpErr.Code)
+	}
+}
+
 func TestBindUnmarshalParam(t *testing.T) {
 	e := New()
 	req := httptest.NewRequest(http.MethodGet, "/?ts=2016-12-06T19:09:05Z&sa=one,two,three&ta=2016-12-06T19:09:05Z&ta=2016-12-06T19:09:05Z&ST=baz", nil)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	result := struct {
-		T  Timestamp   `query:"ts"`
-		TA []Timestamp `query:"ta"`
-		SA StringArray `query:"sa"`
-		ST Struct
+		T         Timestamp   `query:"ts"`
+		TA        []Timestamp `query:"ta"`
+		SA        StringArray `query:"sa"`
+		ST        Struct
+		StWithTag struct {
+			Foo string `query:"st"`
+		}
 	}{}
 	err := c.Bind(&result)
 	ts := Timestamp(time.Date(2016, 12, 6, 19, 9, 5, 0, time.UTC))
@@ -216,7 +323,8 @@ func TestBindUnmarshalParam(t *testing.T) {
 		assert.Equal(ts, result.T)
 		assert.Equal(StringArray([]string{"one", "two", "three"}), result.SA)
 		assert.Equal([]Timestamp{ts, ts}, result.TA)
-		assert.Equal(Struct{"baz"}, result.ST)
+		assert.Equal(Struct{""}, result.ST)       // child struct does not have a field with matching tag
+		assert.Equal("baz", result.StWithTag.Foo) // child struct has field with matching tag
 	}
 }
 
@@ -238,7 +346,7 @@ func TestBindUnmarshalText(t *testing.T) {
 		assert.Equal(t, ts, result.T)
 		assert.Equal(t, StringArray([]string{"one", "two", "three"}), result.SA)
 		assert.Equal(t, []time.Time{ts, ts}, result.TA)
-		assert.Equal(t, Struct{"baz"}, result.ST)
+		assert.Equal(t, Struct{""}, result.ST) // field in child struct does not have tag
 	}
 }
 
@@ -256,6 +364,46 @@ func TestBindUnmarshalParamPtr(t *testing.T) {
 	}
 }
 
+func TestBindUnmarshalParamAnonymousFieldPtr(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, "/?baz=1", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	result := struct {
+		*Bar
+	}{&Bar{}}
+	err := c.Bind(&result)
+	if assert.NoError(t, err) {
+		assert.Equal(t, 1, result.Baz)
+	}
+}
+
+func TestBindUnmarshalParamAnonymousFieldPtrNil(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, "/?baz=1", nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	result := struct {
+		*Bar
+	}{}
+	err := c.Bind(&result)
+	if assert.NoError(t, err) {
+		assert.Nil(t, result.Bar)
+	}
+}
+
+func TestBindUnmarshalParamAnonymousFieldPtrCustomTag(t *testing.T) {
+	e := New()
+	req := httptest.NewRequest(http.MethodGet, `/?bar={"baz":100}&baz=1`, nil)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	result := struct {
+		*Bar `json:"bar" query:"bar"`
+	}{&Bar{}}
+	err := c.Bind(&result)
+	assert.Contains(t, err.Error(), "query/param/form tags are not allowed with anonymous struct field")
+}
+
 func TestBindUnmarshalTextPtr(t *testing.T) {
 	e := New()
 	req := httptest.NewRequest(GET, "/?ts=2016-12-06T19:09:05Z", nil)
@@ -271,14 +419,16 @@ func TestBindUnmarshalTextPtr(t *testing.T) {
 }
 
 func TestBindMultipartForm(t *testing.T) {
-	body := new(bytes.Buffer)
-	mw := multipart.NewWriter(body)
+	bodyBuffer := new(bytes.Buffer)
+	mw := multipart.NewWriter(bodyBuffer)
 	mw.WriteField("id", "1")
 	mw.WriteField("name", "Jon Snow")
 	mw.Close()
+	body := bodyBuffer.Bytes()
 
 	assert := assert.New(t)
-	testBindOkay(assert, body, mw.FormDataContentType())
+	testBindOkay(assert, bytes.NewReader(body), nil, mw.FormDataContentType())
+	testBindOkay(assert, bytes.NewReader(body), dummyQuery, mw.FormDataContentType())
 }
 
 func TestBindUnsupportedMediaType(t *testing.T) {
@@ -287,11 +437,27 @@ func TestBindUnsupportedMediaType(t *testing.T) {
 }
 
 func TestBindbindData(t *testing.T) {
-	assert := assert.New(t)
+	a := assert.New(t)
 	ts := new(bindTestStruct)
 	b := new(DefaultBinder)
-	b.bindData(ts, values, "form")
-	assertBindTestStruct(assert, ts)
+	err := b.bindData(ts, values, "form")
+	a.NoError(err)
+
+	a.Equal(0, ts.I)
+	a.Equal(int8(0), ts.I8)
+	a.Equal(int16(0), ts.I16)
+	a.Equal(int32(0), ts.I32)
+	a.Equal(int64(0), ts.I64)
+	a.Equal(uint(0), ts.UI)
+	a.Equal(uint8(0), ts.UI8)
+	a.Equal(uint16(0), ts.UI16)
+	a.Equal(uint32(0), ts.UI32)
+	a.Equal(uint64(0), ts.UI64)
+	a.Equal(false, ts.B)
+	a.Equal(float32(0), ts.F32)
+	a.Equal(float64(0), ts.F64)
+	a.Equal("", ts.S)
+	a.Equal("", ts.cantSet)
 }
 
 func TestBindParam(t *testing.T) {
@@ -434,6 +600,20 @@ func TestBindSetFields(t *testing.T) {
 	}
 }
 
+func BenchmarkBindbindDataWithTags(b *testing.B) {
+	b.ReportAllocs()
+	assert := assert.New(b)
+	ts := new(bindTestStructWithTags)
+	binder := new(DefaultBinder)
+	var err error
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		err = binder.bindData(ts, values, "form")
+	}
+	assert.NoError(err)
+	assertBindTestStruct(assert, (*bindTestStruct)(ts))
+}
+
 func assertBindTestStruct(a *assert.Assertions, ts *bindTestStruct) {
 	a.Equal(0, ts.I)
 	a.Equal(int8(8), ts.I8)
@@ -452,9 +632,13 @@ func assertBindTestStruct(a *assert.Assertions, ts *bindTestStruct) {
 	a.Equal("", ts.GetCantSet())
 }
 
-func testBindOkay(assert *assert.Assertions, r io.Reader, ctype string) {
+func testBindOkay(assert *assert.Assertions, r io.Reader, query url.Values, ctype string) {
 	e := New()
-	req := httptest.NewRequest(http.MethodPost, "/", r)
+	path := "/"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	req := httptest.NewRequest(http.MethodPost, path, r)
 	rec := httptest.NewRecorder()
 	c := e.NewContext(req, rec)
 	req.Header.Set(HeaderContentType, ctype)
@@ -463,6 +647,25 @@ func testBindOkay(assert *assert.Assertions, r io.Reader, ctype string) {
 	if assert.NoError(err) {
 		assert.Equal(1, u.ID)
 		assert.Equal("Jon Snow", u.Name)
+	}
+}
+
+func testBindArrayOkay(assert *assert.Assertions, r io.Reader, query url.Values, ctype string) {
+	e := New()
+	path := "/"
+	if len(query) > 0 {
+		path += "?" + query.Encode()
+	}
+	req := httptest.NewRequest(http.MethodPost, path, r)
+	rec := httptest.NewRecorder()
+	c := e.NewContext(req, rec)
+	req.Header.Set(HeaderContentType, ctype)
+	u := []user{}
+	err := c.Bind(&u)
+	if assert.NoError(err) {
+		assert.Equal(1, len(u))
+		assert.Equal(1, u[0].ID)
+		assert.Equal("Jon Snow", u[0].Name)
 	}
 }
 
@@ -487,5 +690,356 @@ func testBindError(assert *assert.Assertions, r io.Reader, ctype string, expecte
 			assert.Equal(ErrUnsupportedMediaType, err)
 			assert.IsType(expectedInternal, err.(*HTTPError).Internal)
 		}
+	}
+}
+
+func TestDefaultBinder_BindToStructFromMixedSources(t *testing.T) {
+	// tests to check binding behaviour when multiple sources path params, query params and request body are in use
+	// binding is done in steps and one source could overwrite previous source binded data
+	// these tests are to document this behaviour and detect further possible regressions when bind implementation is changed
+
+	type Opts struct {
+		ID   int    `json:"id" form:"id" query:"id"`
+		Node string `json:"node" form:"node" query:"node" param:"node"`
+		Lang string
+	}
+
+	var testCases = []struct {
+		name             string
+		givenURL         string
+		givenContent     io.Reader
+		givenMethod      string
+		whenBindTarget   interface{}
+		whenNoPathParams bool
+		expect           interface{}
+		expectError      string
+	}{
+		{
+			name:         "ok, POST bind to struct with: path param + query param + body",
+			givenMethod:  http.MethodPost,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1}`),
+			expect:       &Opts{ID: 1, Node: "node_from_path"}, // query params are not used, node is filled from path
+		},
+		{
+			name:         "ok, PUT bind to struct with: path param + query param + body",
+			givenMethod:  http.MethodPut,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1}`),
+			expect:       &Opts{ID: 1, Node: "node_from_path"}, // query params are not used
+		},
+		{
+			name:         "ok, GET bind to struct with: path param + query param + body",
+			givenMethod:  http.MethodGet,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1}`),
+			expect:       &Opts{ID: 1, Node: "xxx"}, // query overwrites previous path value
+		},
+		{
+			name:         "ok, GET bind to struct with: path param + query param + body",
+			givenMethod:  http.MethodGet,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:       &Opts{ID: 1, Node: "zzz"}, // body is binded last and overwrites previous (path,query) values
+		},
+		{
+			name:         "ok, DELETE bind to struct with: path param + query param + body",
+			givenMethod:  http.MethodDelete,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:       &Opts{ID: 1, Node: "zzz"}, // for DELETE body is binded after query params
+		},
+		{
+			name:         "ok, POST bind to struct with: path param + body",
+			givenMethod:  http.MethodPost,
+			givenURL:     "/api/real_node/endpoint",
+			givenContent: strings.NewReader(`{"id": 1}`),
+			expect:       &Opts{ID: 1, Node: "node_from_path"},
+		},
+		{
+			name:         "ok, POST bind to struct with path + query + body = body has priority",
+			givenMethod:  http.MethodPost,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:       &Opts{ID: 1, Node: "zzz"}, // field value from content has higher priority
+		},
+		{
+			name:         "nok, POST body bind failure",
+			givenMethod:  http.MethodPost,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`{`),
+			expect:       &Opts{ID: 0, Node: "node_from_path"}, // query binding has already modified bind target
+			expectError:  "code=400, message=unexpected EOF, internal=unexpected EOF",
+		},
+		{
+			name:         "nok, GET with body bind failure when types are not convertible",
+			givenMethod:  http.MethodGet,
+			givenURL:     "/api/real_node/endpoint?id=nope",
+			givenContent: strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:       &Opts{ID: 0, Node: "node_from_path"}, // path params binding has already modified bind target
+			expectError:  "code=400, message=strconv.ParseInt: parsing \"nope\": invalid syntax, internal=strconv.ParseInt: parsing \"nope\": invalid syntax",
+		},
+		{
+			name:         "nok, GET body bind failure - trying to bind json array to struct",
+			givenMethod:  http.MethodGet,
+			givenURL:     "/api/real_node/endpoint?node=xxx",
+			givenContent: strings.NewReader(`[{"id": 1}]`),
+			expect:       &Opts{ID: 0, Node: "xxx"}, // query binding has already modified bind target
+			expectError:  "code=400, message=Unmarshal type error: expected=echo.Opts, got=array, field=, offset=1, internal=json: cannot unmarshal array into Go value of type echo.Opts",
+		},
+		{ // query param is ignored as we do not know where exactly to bind it in slice
+			name:             "ok, GET bind to struct slice, ignore query param",
+			givenMethod:      http.MethodGet,
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenContent:     strings.NewReader(`[{"id": 1}]`),
+			whenNoPathParams: true,
+			whenBindTarget:   &[]Opts{},
+			expect: &[]Opts{
+				{ID: 1, Node: ""},
+			},
+		},
+		{ // binding query params interferes with body. b.BindBody() should be used to bind only body to slice
+			name:             "ok, POST binding to slice should not be affected query params types",
+			givenMethod:      http.MethodPost,
+			givenURL:         "/api/real_node/endpoint?id=nope&node=xxx",
+			givenContent:     strings.NewReader(`[{"id": 1}]`),
+			whenNoPathParams: true,
+			whenBindTarget:   &[]Opts{},
+			expect:           &[]Opts{{ID: 1}},
+			expectError:      "",
+		},
+		{ // path param is ignored as we do not know where exactly to bind it in slice
+			name:           "ok, GET bind to struct slice, ignore path param",
+			givenMethod:    http.MethodGet,
+			givenURL:       "/api/real_node/endpoint?node=xxx",
+			givenContent:   strings.NewReader(`[{"id": 1}]`),
+			whenBindTarget: &[]Opts{},
+			expect: &[]Opts{
+				{ID: 1, Node: ""},
+			},
+		},
+		{
+			name:             "ok, GET body bind json array to slice",
+			givenMethod:      http.MethodGet,
+			givenURL:         "/api/real_node/endpoint",
+			givenContent:     strings.NewReader(`[{"id": 1}]`),
+			whenNoPathParams: true,
+			whenBindTarget:   &[]Opts{},
+			expect:           &[]Opts{{ID: 1, Node: ""}},
+			expectError:      "",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New()
+			// assume route we are testing is "/api/:node/endpoint?some_query_params=here"
+			req := httptest.NewRequest(tc.givenMethod, tc.givenURL, tc.givenContent)
+			req.Header.Set(HeaderContentType, MIMEApplicationJSON)
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+
+			if !tc.whenNoPathParams {
+				c.SetParamNames("node")
+				c.SetParamValues("node_from_path")
+			}
+
+			var bindTarget interface{}
+			if tc.whenBindTarget != nil {
+				bindTarget = tc.whenBindTarget
+			} else {
+				bindTarget = &Opts{}
+			}
+			b := new(DefaultBinder)
+
+			err := b.Bind(bindTarget, c)
+			if tc.expectError != "" {
+				assert.EqualError(t, err, tc.expectError)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tc.expect, bindTarget)
+		})
+	}
+}
+
+func TestDefaultBinder_BindBody(t *testing.T) {
+	// tests to check binding behaviour when multiple sources path params, query params and request body are in use
+	// generally when binding from request body - URL and path params are ignored - unless form is being binded.
+	// these tests are to document this behaviour and detect further possible regressions when bind implementation is changed
+
+	type Node struct {
+		ID   int    `json:"id" xml:"id" form:"id" query:"id"`
+		Node string `json:"node" xml:"node" form:"node" query:"node" param:"node"`
+	}
+	type Nodes struct {
+		Nodes []Node `xml:"node" form:"node"`
+	}
+
+	var testCases = []struct {
+		name             string
+		givenURL         string
+		givenContent     io.Reader
+		givenMethod      string
+		givenContentType string
+		whenNoPathParams bool
+		whenBindTarget   interface{}
+		expect           interface{}
+		expectError      string
+	}{
+		{
+			name:             "ok, JSON POST bind to struct with: path + query + empty field in body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`{"id": 1}`),
+			expect:           &Node{ID: 1, Node: ""}, // path params or query params should not interfere with body
+		},
+		{
+			name:             "ok, JSON POST bind to struct with: path + query + body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:           &Node{ID: 1, Node: "zzz"}, // field value from content has higher priority
+		},
+		{
+			name:             "ok, JSON POST body bind json array to slice (has matching path/query params)",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`[{"id": 1}]`),
+			whenNoPathParams: true,
+			whenBindTarget:   &[]Node{},
+			expect:           &[]Node{{ID: 1, Node: ""}},
+			expectError:      "",
+		},
+		{ // rare case as GET is not usually used to send request body
+			name:             "ok, JSON GET bind to struct with: path + query + empty field in body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodGet,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`{"id": 1}`),
+			expect:           &Node{ID: 1, Node: ""}, // path params or query params should not interfere with body
+		},
+		{ // rare case as GET is not usually used to send request body
+			name:             "ok, JSON GET bind to struct with: path + query + body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodGet,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`{"id": 1, "node": "zzz"}`),
+			expect:           &Node{ID: 1, Node: "zzz"}, // field value from content has higher priority
+		},
+		{
+			name:             "nok, JSON POST body bind failure",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationJSON,
+			givenContent:     strings.NewReader(`{`),
+			expect:           &Node{ID: 0, Node: ""},
+			expectError:      "code=400, message=unexpected EOF, internal=unexpected EOF",
+		},
+		{
+			name:             "ok, XML POST bind to struct with: path + query + empty body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationXML,
+			givenContent:     strings.NewReader(`<node><id>1</id><node>yyy</node></node>`),
+			expect:           &Node{ID: 1, Node: "yyy"},
+		},
+		{
+			name:             "ok, XML POST bind array to slice with: path + query + body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationXML,
+			givenContent:     strings.NewReader(`<nodes><node><id>1</id><node>yyy</node></node></nodes>`),
+			whenBindTarget:   &Nodes{},
+			expect:           &Nodes{Nodes: []Node{{ID: 1, Node: "yyy"}}},
+		},
+		{
+			name:             "nok, XML POST bind failure",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationXML,
+			givenContent:     strings.NewReader(`<node><`),
+			expect:           &Node{ID: 0, Node: ""},
+			expectError:      "code=400, message=Syntax error: line=1, error=XML syntax error on line 1: unexpected EOF, internal=XML syntax error on line 1: unexpected EOF",
+		},
+		{
+			name:             "ok, FORM POST bind to struct with: path + query + body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationForm,
+			givenContent:     strings.NewReader(`id=1&node=yyy`),
+			expect:           &Node{ID: 1, Node: "yyy"},
+		},
+		{
+			// NB: form values are taken from BOTH body and query for POST/PUT/PATCH by standard library implementation
+			// See: https://golang.org/pkg/net/http/#Request.ParseForm
+			name:             "ok, FORM POST bind to struct with: path + query + empty field in body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMEApplicationForm,
+			givenContent:     strings.NewReader(`id=1`),
+			expect:           &Node{ID: 1, Node: "xxx"},
+		},
+		{
+			// NB: form values are taken from query by standard library implementation
+			// See: https://golang.org/pkg/net/http/#Request.ParseForm
+			name:             "ok, FORM GET bind to struct with: path + query + empty field in body",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodGet,
+			givenContentType: MIMEApplicationForm,
+			givenContent:     strings.NewReader(`id=1`),
+			expect:           &Node{ID: 0, Node: "xxx"}, // 'xxx' is taken from URL and body is not used with GET by implementation
+		},
+		{
+			name:             "nok, unsupported content type",
+			givenURL:         "/api/real_node/endpoint?node=xxx",
+			givenMethod:      http.MethodPost,
+			givenContentType: MIMETextPlain,
+			givenContent:     strings.NewReader(`<html></html>`),
+			expect:           &Node{ID: 0, Node: ""},
+			expectError:      "code=415, message=Unsupported Media Type",
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			e := New()
+			// assume route we are testing is "/api/:node/endpoint?some_query_params=here"
+			req := httptest.NewRequest(tc.givenMethod, tc.givenURL, tc.givenContent)
+			switch tc.givenContentType {
+			case MIMEApplicationXML:
+				req.Header.Set(HeaderContentType, MIMEApplicationXML)
+			case MIMEApplicationForm:
+				req.Header.Set(HeaderContentType, MIMEApplicationForm)
+			case MIMEApplicationJSON:
+				req.Header.Set(HeaderContentType, MIMEApplicationJSON)
+			}
+			rec := httptest.NewRecorder()
+			c := e.NewContext(req, rec)
+
+			if !tc.whenNoPathParams {
+				c.SetParamNames("node")
+				c.SetParamValues("real_node")
+			}
+
+			var bindTarget interface{}
+			if tc.whenBindTarget != nil {
+				bindTarget = tc.whenBindTarget
+			} else {
+				bindTarget = &Node{}
+			}
+			b := new(DefaultBinder)
+
+			err := b.BindBody(c, bindTarget)
+			if tc.expectError != "" {
+				assert.EqualError(t, err, tc.expectError)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tc.expect, bindTarget)
+		})
 	}
 }

@@ -18,6 +18,7 @@ import (
 	"text/template"
 	"time"
 
+	"github.com/labstack/gommon/log"
 	testify "github.com/stretchr/testify/assert"
 )
 
@@ -68,6 +69,15 @@ func BenchmarkAllocXML(b *testing.B) {
 
 	for i := 0; i < b.N; i++ {
 		c.XML(http.StatusOK, testUser)
+	}
+}
+
+func BenchmarkRealIPForHeaderXForwardFor(b *testing.B) {
+	c := context{request: &http.Request{
+		Header: http.Header{HeaderXForwardedFor: []string{"127.0.0.1, 127.0.1.1, "}},
+	}}
+	for i := 0; i < b.N; i++ {
+		c.RealIP()
 	}
 }
 
@@ -454,7 +464,9 @@ func TestContextPath(t *testing.T) {
 	e := New()
 	r := e.Router()
 
-	r.Add(http.MethodGet, "/users/:id", nil)
+	handler := func(c Context) error { return c.String(http.StatusOK, "OK") }
+
+	r.Add(http.MethodGet, "/users/:id", handler)
 	c := e.NewContext(nil, nil)
 	r.Find(http.MethodGet, "/users/1", c)
 
@@ -462,7 +474,7 @@ func TestContextPath(t *testing.T) {
 
 	assert.Equal("/users/:id", c.Path())
 
-	r.Add(http.MethodGet, "/users/:uid/files/:fid", nil)
+	r.Add(http.MethodGet, "/users/:uid/files/:fid", handler)
 	c = e.NewContext(nil, nil)
 	r.Find(http.MethodGet, "/users/1/files/1", c)
 	assert.Equal("/users/:uid/files/:fid", c.Path())
@@ -484,6 +496,61 @@ func TestContextPathParam(t *testing.T) {
 	// Param
 	testify.Equal(t, "501", c.Param("fid"))
 	testify.Equal(t, "", c.Param("undefined"))
+}
+
+func TestContextGetAndSetParam(t *testing.T) {
+	e := New()
+	r := e.Router()
+	r.Add(http.MethodGet, "/:foo", func(Context) error { return nil })
+	req := httptest.NewRequest(http.MethodGet, "/:foo", nil)
+	c := e.NewContext(req, nil)
+	c.SetParamNames("foo")
+
+	// round-trip param values with modification
+	paramVals := c.ParamValues()
+	testify.EqualValues(t, []string{""}, c.ParamValues())
+	paramVals[0] = "bar"
+	c.SetParamValues(paramVals...)
+	testify.EqualValues(t, []string{"bar"}, c.ParamValues())
+
+	// shouldn't explode during Reset() afterwards!
+	testify.NotPanics(t, func() {
+		c.Reset(nil, nil)
+	})
+}
+
+// Issue #1655
+func TestContextSetParamNamesShouldUpdateEchoMaxParam(t *testing.T) {
+	assert := testify.New(t)
+
+	e := New()
+	assert.Equal(0, *e.maxParam)
+
+	expectedOneParam := []string{"one"}
+	expectedTwoParams := []string{"one", "two"}
+	expectedThreeParams := []string{"one", "two", ""}
+	expectedABCParams := []string{"A", "B", "C"}
+
+	c := e.NewContext(nil, nil)
+	c.SetParamNames("1", "2")
+	c.SetParamValues(expectedTwoParams...)
+	assert.Equal(2, *e.maxParam)
+	assert.EqualValues(expectedTwoParams, c.ParamValues())
+
+	c.SetParamNames("1")
+	assert.Equal(2, *e.maxParam)
+	// Here for backward compatibility the ParamValues remains as they are
+	assert.EqualValues(expectedOneParam, c.ParamValues())
+
+	c.SetParamNames("1", "2", "3")
+	assert.Equal(3, *e.maxParam)
+	// Here for backward compatibility the ParamValues remains as they are, but the len is extended to e.maxParam
+	assert.EqualValues(expectedThreeParams, c.ParamValues())
+
+	c.SetParamValues("A", "B", "C", "D")
+	assert.Equal(3, *e.maxParam)
+	// Here D shouldn't be returned
+	assert.EqualValues(expectedABCParams, c.ParamValues())
 }
 
 func TestContextFormValue(t *testing.T) {
@@ -584,8 +651,7 @@ func TestContextRedirect(t *testing.T) {
 }
 
 func TestContextStore(t *testing.T) {
-	var c Context
-	c = new(context)
+	var c Context = new(context)
 	c.Set("name", "Jon Snow")
 	testify.Equal(t, "Jon Snow", c.Get("name"))
 }
@@ -622,8 +688,7 @@ func TestContextHandler(t *testing.T) {
 }
 
 func TestContext_SetHandler(t *testing.T) {
-	var c Context
-	c = new(context)
+	var c Context = new(context)
 
 	testify.Nil(t, c.Handler())
 
@@ -636,8 +701,7 @@ func TestContext_SetHandler(t *testing.T) {
 func TestContext_Path(t *testing.T) {
 	path := "/pa/th"
 
-	var c Context
-	c = new(context)
+	var c Context = new(context)
 
 	c.SetPath(path)
 	testify.Equal(t, path, c.Path())
@@ -671,8 +735,7 @@ func TestContext_QueryString(t *testing.T) {
 }
 
 func TestContext_Request(t *testing.T) {
-	var c Context
-	c = new(context)
+	var c Context = new(context)
 
 	testify.Nil(t, c.Request())
 
@@ -800,7 +863,16 @@ func TestContext_Logger(t *testing.T) {
 	e := New()
 	c := e.NewContext(nil, nil)
 
-	testify.NotNil(t, c.Logger())
+	log1 := c.Logger()
+	testify.NotNil(t, log1)
+
+	log2 := log.New("echo2")
+	c.SetLogger(log2)
+	testify.Equal(t, log2, c.Logger())
+
+	// Resetting the context returns the initial logger
+	c.Reset(nil, nil)
+	testify.Equal(t, log1, c.Logger())
 }
 
 func TestContext_RealIP(t *testing.T) {
@@ -812,6 +884,22 @@ func TestContext_RealIP(t *testing.T) {
 			&context{
 				request: &http.Request{
 					Header: http.Header{HeaderXForwardedFor: []string{"127.0.0.1, 127.0.1.1, "}},
+				},
+			},
+			"127.0.0.1",
+		},
+		{
+			&context{
+				request: &http.Request{
+					Header: http.Header{HeaderXForwardedFor: []string{"127.0.0.1,127.0.1.1"}},
+				},
+			},
+			"127.0.0.1",
+		},
+		{
+			&context{
+				request: &http.Request{
+					Header: http.Header{HeaderXForwardedFor: []string{"127.0.0.1"}},
 				},
 			},
 			"127.0.0.1",
