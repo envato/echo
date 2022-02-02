@@ -2,8 +2,9 @@ package middleware
 
 import (
 	"errors"
-	"github.com/labstack/echo/v4"
 	"net/http"
+
+	"github.com/labstack/echo/v4"
 )
 
 type (
@@ -32,6 +33,10 @@ type (
 		// Optional. Default value "Bearer".
 		AuthScheme string
 
+		// NilAuthScheme indicates there's no keyword in the header storing the JWT Token.
+		// Optional. Default is false.
+		NilAuthScheme bool
+
 		// Validator is a function to validate key.
 		// Required.
 		Validator KeyAuthValidator
@@ -58,9 +63,10 @@ type (
 var (
 	// DefaultKeyAuthConfig is the default KeyAuth middleware config.
 	DefaultKeyAuthConfig = KeyAuthConfig{
-		Skipper:    DefaultSkipper,
-		KeyLookup:  "header:" + echo.HeaderAuthorization,
-		AuthScheme: "Bearer",
+		Skipper:       DefaultSkipper,
+		KeyLookup:     "header:" + echo.HeaderAuthorization,
+		AuthScheme:    "Bearer",
+		NilAuthScheme: false,
 	}
 )
 
@@ -101,6 +107,9 @@ func KeyAuthWithConfig(config KeyAuthConfig) echo.MiddlewareFunc {
 	if config.AuthScheme == "" {
 		config.AuthScheme = DefaultKeyAuthConfig.AuthScheme
 	}
+	if config.NilAuthScheme == false {
+		config.NilAuthScheme = DefaultKeyAuthConfig.NilAuthScheme
+	}
 	if config.KeyLookup == "" {
 		config.KeyLookup = DefaultKeyAuthConfig.KeyLookup
 	}
@@ -108,7 +117,7 @@ func KeyAuthWithConfig(config KeyAuthConfig) echo.MiddlewareFunc {
 		panic("echo: key-auth middleware requires a validator function")
 	}
 
-	extractors, err := createExtractors(config.KeyLookup, config.AuthScheme)
+	extractors, err := createExtractors(config.KeyLookup, config.AuthScheme, config.NilAuthScheme)
 	if err != nil {
 		panic(err)
 	}

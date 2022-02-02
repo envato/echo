@@ -3,9 +3,10 @@ package middleware
 import (
 	"errors"
 	"fmt"
-	"github.com/labstack/echo/v4"
 	"net/textproto"
 	"strings"
+
+	"github.com/labstack/echo/v4"
 )
 
 const (
@@ -24,7 +25,7 @@ var errFormExtractorValueMissing = errors.New("missing value in the form")
 // ValuesExtractor defines a function for extracting values (keys/tokens) from the given context.
 type ValuesExtractor func(c echo.Context) ([]string, error)
 
-func createExtractors(lookups string, authScheme string) ([]ValuesExtractor, error) {
+func createExtractors(lookups string, authScheme string, nilAuthScheme bool) ([]ValuesExtractor, error) {
 	if lookups == "" {
 		return nil, nil
 	}
@@ -59,7 +60,7 @@ func createExtractors(lookups string, authScheme string) ([]ValuesExtractor, err
 					prefix += " "
 				}
 			}
-			extractors = append(extractors, valuesFromHeader(parts[1], prefix))
+			extractors = append(extractors, valuesFromHeader(parts[1], prefix, nilAuthScheme))
 		}
 	}
 	return extractors, nil
@@ -71,12 +72,17 @@ func createExtractors(lookups string, authScheme string) ([]ValuesExtractor, err
 // note the space at the end. In case of basic authentication `Authorization: Basic <credentials>` prefix we want to remove
 // is `Basic `. In case of JWT tokens `Authorization: Bearer <token>` prefix is `Bearer `.
 // If prefix is left empty the whole value is returned.
-func valuesFromHeader(header string, valuePrefix string) ValuesExtractor {
+func valuesFromHeader(header string, valuePrefix string, nilAuthScheme bool) ValuesExtractor {
 	prefixLen := len(valuePrefix)
 	// standard library parses http.Request header keys in canonical form but we may provide something else so fix this
 	header = textproto.CanonicalMIMEHeaderKey(header)
 	return func(c echo.Context) ([]string, error) {
 		values := c.Request().Header.Values(header)
+
+		if nilAuthScheme && len(values) > 0 {
+			return values, nil
+		}
+
 		if len(values) == 0 {
 			return nil, errHeaderExtractorValueMissing
 		}

@@ -2,13 +2,14 @@ package middleware
 
 import (
 	"fmt"
-	"github.com/labstack/echo/v4"
-	"github.com/stretchr/testify/assert"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/labstack/echo/v4"
+	"github.com/stretchr/testify/assert"
 )
 
 type pathParam struct {
@@ -108,7 +109,7 @@ func TestCreateExtractors(t *testing.T) {
 				setPathParams(c, tc.givenPathParams)
 			}
 
-			extractors, err := createExtractors(tc.whenLoopups, "")
+			extractors, err := createExtractors(tc.whenLoopups, "", false)
 			if tc.expectCreateError != "" {
 				assert.EqualError(t, err, tc.expectCreateError)
 				return
@@ -134,26 +135,29 @@ func TestValuesFromHeader(t *testing.T) {
 	}
 
 	var testCases = []struct {
-		name            string
-		givenRequest    func(req *http.Request)
-		whenName        string
-		whenValuePrefix string
-		expectValues    []string
-		expectError     string
+		name              string
+		givenRequest      func(req *http.Request)
+		whenName          string
+		whenValuePrefix   string
+		whennilAuthScheme bool
+		expectValues      []string
+		expectError       string
 	}{
 		{
-			name:            "ok, single value",
-			givenRequest:    exampleRequest,
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "basic ",
-			expectValues:    []string{"dXNlcjpwYXNzd29yZA=="},
+			name:              "ok, single value",
+			givenRequest:      exampleRequest,
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "basic ",
+			whennilAuthScheme: false,
+			expectValues:      []string{"dXNlcjpwYXNzd29yZA=="},
 		},
 		{
-			name:            "ok, single value, case insensitive",
-			givenRequest:    exampleRequest,
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "Basic ",
-			expectValues:    []string{"dXNlcjpwYXNzd29yZA=="},
+			name:              "ok, single value, case insensitive",
+			givenRequest:      exampleRequest,
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "Basic ",
+			whennilAuthScheme: false,
+			expectValues:      []string{"dXNlcjpwYXNzd29yZA=="},
 		},
 		{
 			name: "ok, multiple value",
@@ -161,26 +165,18 @@ func TestValuesFromHeader(t *testing.T) {
 				req.Header.Set(echo.HeaderAuthorization, "basic dXNlcjpwYXNzd29yZA==")
 				req.Header.Add(echo.HeaderAuthorization, "basic dGVzdDp0ZXN0")
 			},
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "basic ",
-			expectValues:    []string{"dXNlcjpwYXNzd29yZA==", "dGVzdDp0ZXN0"},
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "basic ",
+			whennilAuthScheme: false,
+			expectValues:      []string{"dXNlcjpwYXNzd29yZA==", "dGVzdDp0ZXN0"},
 		},
 		{
-			name:            "ok, empty prefix",
-			givenRequest:    exampleRequest,
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "",
-			expectValues:    []string{"basic dXNlcjpwYXNzd29yZA=="},
-		},
-		{
-			name: "nok, no matching due different prefix",
-			givenRequest: func(req *http.Request) {
-				req.Header.Set(echo.HeaderAuthorization, "basic dXNlcjpwYXNzd29yZA==")
-				req.Header.Add(echo.HeaderAuthorization, "basic dGVzdDp0ZXN0")
-			},
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "Bearer ",
-			expectError:     errHeaderExtractorValueInvalid.Error(),
+			name:              "ok, empty prefix",
+			givenRequest:      exampleRequest,
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "",
+			whennilAuthScheme: false,
+			expectValues:      []string{"basic dXNlcjpwYXNzd29yZA=="},
 		},
 		{
 			name: "nok, no matching due different prefix",
@@ -188,16 +184,29 @@ func TestValuesFromHeader(t *testing.T) {
 				req.Header.Set(echo.HeaderAuthorization, "basic dXNlcjpwYXNzd29yZA==")
 				req.Header.Add(echo.HeaderAuthorization, "basic dGVzdDp0ZXN0")
 			},
-			whenName:        echo.HeaderWWWAuthenticate,
-			whenValuePrefix: "",
-			expectError:     errHeaderExtractorValueMissing.Error(),
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "Bearer ",
+			whennilAuthScheme: false,
+			expectError:       errHeaderExtractorValueInvalid.Error(),
 		},
 		{
-			name:            "nok, no headers",
-			givenRequest:    nil,
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "basic ",
-			expectError:     errHeaderExtractorValueMissing.Error(),
+			name: "nok, no matching due different prefix",
+			givenRequest: func(req *http.Request) {
+				req.Header.Set(echo.HeaderAuthorization, "basic dXNlcjpwYXNzd29yZA==")
+				req.Header.Add(echo.HeaderAuthorization, "basic dGVzdDp0ZXN0")
+			},
+			whenName:          echo.HeaderWWWAuthenticate,
+			whenValuePrefix:   "",
+			whennilAuthScheme: false,
+			expectError:       errHeaderExtractorValueMissing.Error(),
+		},
+		{
+			name:              "nok, no headers",
+			givenRequest:      nil,
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "basic ",
+			whennilAuthScheme: false,
+			expectError:       errHeaderExtractorValueMissing.Error(),
 		},
 		{
 			name: "ok, prefix, cut values over extractorLimit",
@@ -206,8 +215,9 @@ func TestValuesFromHeader(t *testing.T) {
 					req.Header.Add(echo.HeaderAuthorization, fmt.Sprintf("basic %v", i))
 				}
 			},
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "basic ",
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "basic ",
+			whennilAuthScheme: false,
 			expectValues: []string{
 				"1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
 				"11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
@@ -220,12 +230,21 @@ func TestValuesFromHeader(t *testing.T) {
 					req.Header.Add(echo.HeaderAuthorization, fmt.Sprintf("%v", i))
 				}
 			},
-			whenName:        echo.HeaderAuthorization,
-			whenValuePrefix: "",
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "",
+			whennilAuthScheme: false,
 			expectValues: []string{
 				"1", "2", "3", "4", "5", "6", "7", "8", "9", "10",
 				"11", "12", "13", "14", "15", "16", "17", "18", "19", "20",
 			},
+		},
+		{
+			name:              "ok, nil auth scheme",
+			givenRequest:      exampleRequest,
+			whenName:          echo.HeaderAuthorization,
+			whenValuePrefix:   "",
+			whennilAuthScheme: true,
+			expectValues:      []string{"basic dXNlcjpwYXNzd29yZA=="},
 		},
 	}
 
@@ -240,7 +259,7 @@ func TestValuesFromHeader(t *testing.T) {
 			rec := httptest.NewRecorder()
 			c := e.NewContext(req, rec)
 
-			extractor := valuesFromHeader(tc.whenName, tc.whenValuePrefix)
+			extractor := valuesFromHeader(tc.whenName, tc.whenValuePrefix, tc.whennilAuthScheme)
 
 			values, err := extractor(c)
 			assert.Equal(t, tc.expectValues, values)
